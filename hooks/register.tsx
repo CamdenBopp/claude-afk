@@ -16,6 +16,7 @@ import {
   languageLabel,
   languageOf,
   normalizeSettings,
+  reachProblem,
   voiceLabel,
   parseVoices,
 } from './settings'
@@ -114,10 +115,6 @@ async function setAway($: Api, away: boolean, isAuto: boolean) {
   await update($, awayAtom, () => away)
   await update($, autoAwayAtom, () => away && isAuto)
   showStatus($, away, away && isAuto)
-}
-
-function hasChannel(settings: AfkSettings) {
-  return settings.voice.isEnabled || (settings.messages.isEnabled && settings.messages.primary !== '')
 }
 
 async function projectName($: Api) {
@@ -307,7 +304,8 @@ export const register: Register = on => {
 
     if (arg === 'test') {
       await ping($, { spoken: 'AFK test from Claude.', text: `AFK test from Claude Code in ${await projectName($)}.` })
-      return { text: hasChannel(settings) ? 'Test ping sent.' : 'Nothing to test: voice and iMessage are both off. Run /afk setup.' }
+      const canSend = settings.voice.isEnabled || (settings.messages.isEnabled && settings.messages.primary !== '')
+      return { text: canSend ? 'Test ping sent.' : 'Nothing to test: voice and iMessage are both off. Run /afk setup.' }
     }
 
     if (arg === 'origins') {
@@ -328,10 +326,11 @@ export const register: Register = on => {
     const away = arg === '' ? !wasAway : arg === 'on'
     await setAway($, away, false)
     if (!away) return { text: 'AFK off.' }
+    const problem = reachProblem(settings)
     return {
-      text: hasChannel(settings)
+      text: problem === undefined
         ? 'AFK on. You will get a ping when a turn ends or Claude needs you.'
-        : 'AFK on, but voice and iMessage are both off, so nothing will reach you. Run /afk setup.',
+        : `AFK on, but no ping will go out. ${problem} Run /afk setup.`,
     }
   })
 
@@ -450,9 +449,28 @@ export const register: Register = on => {
     const pickedLanguage = await read($, voiceLanguageAtom)
     const errors = await read($, fieldErrorsAtom)
     const lastTest = await read($, lastTestAtom)
-    const onOff = (isOn: boolean) => (isOn ? 'on' : 'off')
 
-    const toggle = (change: (s: AfkSettings) => AfkSettings) => () => void saveSettings($, change)
+    // An on/off setting. Where the surface has pickers it is an On/Off Select,
+    // which announces its value. A button labelled "X: on" reads the same
+    // whether "on" is the state or the action, so on the phone the button
+    // names what pressing it does.
+    const onOffOptions = [{ value: 'on', label: 'On' }, { value: 'off', label: 'Off' }]
+    const setting = (key: string, label: string, isOn: boolean, change: (s: AfkSettings, isOn: boolean) => AfkSettings) =>
+      Select !== undefined ? (
+        <Select
+          key={key}
+          label={label}
+          options={onOffOptions}
+          value={isOn ? 'on' : 'off'}
+          onSelect={value => void saveSettings($, s => change(s, value === 'on'))}
+        />
+      ) : (
+        <Button
+          key={key}
+          label={`${isOn ? 'Turn off' : 'Turn on'}: ${label.charAt(0).toLowerCase()}${label.slice(1)}`}
+          onPress={() => void saveSettings($, s => change(s, !isOn))}
+        />
+      )
 
     const heading = (text: string) => <Text bold>{text}</Text>
 
@@ -506,18 +524,12 @@ export const register: Register = on => {
               onPress={() => void setAway($, !away, false)}
             />
           </Box>
-          {!hasChannel(settings) && (
-            <Text color="yellow">Voice and iMessage are both off, so pings can't reach you.</Text>
-          )}
+          {reachProblem(settings) !== undefined && <Text color="yellow">{reachProblem(settings)}</Text>}
         </Box>
 
         <Box flexDirection="column">
           {heading('Voice')}
-          <Button
-            key="voice-enabled"
-            label={`Speak pings: ${onOff(settings.voice.isEnabled)}`}
-            onPress={toggle(s => ({ ...s, voice: { ...s.voice, isEnabled: !s.voice.isEnabled } }))}
-          />
+          {setting('voice-enabled', 'Speak pings', settings.voice.isEnabled, (s, isEnabled) => ({ ...s, voice: { ...s.voice, isEnabled } }))}
           {Select !== undefined && languageOptions.length > 0 && (
             <Select
               key="voice-language"
@@ -551,11 +563,7 @@ export const register: Register = on => {
 
         <Box flexDirection="column">
           {heading('iMessage')}
-          <Button
-            key="messages-enabled"
-            label={`Text pings: ${onOff(settings.messages.isEnabled)}`}
-            onPress={toggle(s => ({ ...s, messages: { ...s.messages, isEnabled: !s.messages.isEnabled } }))}
-          />
+          {setting('messages-enabled', 'Send pings by iMessage', settings.messages.isEnabled, (s, isEnabled) => ({ ...s, messages: { ...s.messages, isEnabled } }))}
           {Input !== undefined ? (
             <Box flexDirection="column">
               <Input
@@ -593,13 +601,9 @@ export const register: Register = on => {
 
         <Box flexDirection="column">
           {heading('Ping me when')}
-          {PING_KINDS.map(kind => (
-            <Button
-              key={`ping-${kind}`}
-              label={`${PING_LABELS[kind]}: ${onOff(settings.pings[kind])}`}
-              onPress={toggle(s => ({ ...s, pings: { ...s.pings, [kind]: !s.pings[kind] } }))}
-            />
-          ))}
+          {PING_KINDS.map(kind =>
+            setting(`ping-${kind}`, `Ping when ${PING_LABELS[kind]}`, settings.pings[kind], (s, isOn) => ({ ...s, pings: { ...s.pings, [kind]: isOn } })),
+          )}
         </Box>
 
         <Box flexDirection="column">

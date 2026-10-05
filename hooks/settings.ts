@@ -8,15 +8,26 @@ export const DEFAULT_SETTINGS: AfkSettings = {
   autoAwayMinutes: 5,
 }
 
+// Each reads after "Ping when".
 export const PING_LABELS: Record<AfkPingKind, string> = {
-  finished: 'A turn finishes',
+  finished: 'a turn finishes',
   question: 'Claude asks a question',
-  plan: 'A plan is ready for review',
-  approval: 'A tool call may need approval',
-  error: 'A turn stops on an error',
+  plan: 'a plan is ready for review',
+  approval: 'a tool call may need approval',
+  error: 'a turn stops on an error',
 }
 
 export const PING_KINDS = Object.keys(PING_LABELS) as AfkPingKind[]
+
+// Why AFK being on would still reach nobody, or undefined when a ping can
+// get through.
+export function reachProblem(settings: AfkSettings) {
+  const hasVoice = settings.voice.isEnabled
+  const hasMessages = settings.messages.isEnabled && settings.messages.primary !== ''
+  if (!hasVoice && !hasMessages) return 'Voice and iMessage are both off, so pings can\'t reach you.'
+  if (!PING_KINDS.some(kind => settings.pings[kind])) return 'Every event under "Ping me when" is off, so nothing will ping you.'
+  return undefined
+}
 
 export const AUTO_AWAY_CHOICES = [0, 2, 5, 10, 15, 30] as const
 

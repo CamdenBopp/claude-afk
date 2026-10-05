@@ -95,11 +95,21 @@ describe('/afk command', () => {
   test('toggles, and warns when no channel can reach you', async ($, on) => {
     const h = harness(on, { store: { settings: { voice: { isEnabled: false } } } })
     const first = await $.command.run({ command: 'afk', args: '' } as never)
-    expect(first.text).toContain('nothing will reach you')
+    expect(first.text).toContain("pings can't reach you")
     expect(h.store.get('isAway')).toBe(true)
     const second = await $.command.run({ command: 'afk', args: 'off' } as never)
     expect(second.text).toBe('AFK off.')
     expect(h.store.get('isAway')).toBe(false)
+  })
+})
+
+describe('/afk on with every ping kind off', () => {
+  test('says no ping will go out instead of promising one', async ($, on) => {
+    const off = { finished: false, question: false, plan: false, approval: false, error: false }
+    harness(on, { store: { settings: { ...configured.settings, pings: off } } })
+    const result = await $.command.run({ command: 'afk', args: 'on' } as never)
+    expect(result.text).toContain('no ping will go out')
+    expect(result.text).not.toContain('You will get a ping')
   })
 })
 
@@ -224,7 +234,7 @@ describe('setup pane', () => {
       await ui.input({ key: 'primary', text: HANDLE })
       const saved = normalizeSettings(h.store.get('settings'))
       expect(saved.messages).toEqual({ isEnabled: true, primary: HANDLE, fallback: '' })
-      expect(await ui.find({ key: 'messages-enabled', text: 'Text pings: on' })).toBeDefined()
+      expect((await ui.find({ key: 'messages-enabled' }))?.props.value).toBe('on')
     })
 
     test(`${surface}: picking a voice and toggling a ping kind persist`, async ($, on) => {
@@ -235,7 +245,7 @@ describe('setup pane', () => {
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'afk-setup', props: PANE_PROPS })
 
       await ui.select({ key: 'voice-name', value: 'Samantha (English (US))' })
-      await ui.press({ key: 'ping-approval' })
+      await ui.select({ key: 'ping-approval', value: 'off' })
       await ui.select({ key: 'auto-away', value: '10' })
       const saved = normalizeSettings(h.store.get('settings'))
       expect(saved.voice.name).toBe('Samantha (English (US))')
@@ -288,6 +298,11 @@ describe('setup pane', () => {
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'mobile', component: 'Pane', requestId: 'afk-setup', props: PANE_PROPS })
 
     expect(await ui.find({ type: 'Text', text: `Send to: ${HANDLE}` })).toBeDefined()
+    // No pickers on the phone: the button names its action, not a state.
+    expect(await ui.find({ key: 'ping-finished', text: 'Turn off: ping when a turn finishes' })).toBeDefined()
+    await ui.press({ key: 'ping-finished' })
+    expect(normalizeSettings(h.store.get('settings')).pings.finished).toBe(false)
+    expect(await ui.find({ key: 'ping-finished', text: 'Turn on: ping when a turn finishes' })).toBeDefined()
     await ui.press({ key: 'away' })
     expect(h.store.get('isAway')).toBe(true)
   })

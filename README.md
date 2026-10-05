@@ -35,8 +35,8 @@ For every session, including the Code tab in the Claude desktop app, add the fol
 Run `/afk setup`. The pane has four parts:
 
 - **Voice:** turn spoken pings on or off and pick any voice installed on your Mac. If you use a screen reader, pick a different voice from the one it uses so pings stand out.
-- **iMessage:** the email address or phone number to text, plus an optional fallback that's tried if the first send fails. Press Enter in a field to save it. Use "Send test message" to check it.
-- **Ping me when:** choose which events send a ping.
+- **iMessage:** the email address or phone number to text, plus an optional fallback that's tried if the first send fails. Press Enter in a field to save it. Use "Send test message" to check it. Include the country code on a phone number, like +1 for the US.
+- **Ping me when:** an On/Off setting for each event that can send a ping.
 - **Turn AFK on automatically:** how long the Mac has to be quiet before a phone message turns AFK on, or Never.
 
 The first test message makes macOS ask whether Claude Code may control Messages. Allow it, or no texts will go out.
