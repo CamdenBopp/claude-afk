@@ -29,6 +29,8 @@ declare module 'claude-code' {
       isAway: boolean
       isAutoAway: boolean
       voices: AfkVoice[]
+      /** The language the voice picker shows; null follows the saved voice. */
+      voiceLanguage: string | null
       /** Per-field problems with what was typed, by Input key. */
       fieldErrors: Record<string, string>
       lastTest: AfkTestResult | null

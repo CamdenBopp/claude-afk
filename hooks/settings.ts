@@ -83,6 +83,35 @@ export function parseVoices(output: string): AfkVoice[] {
   return voices.sort((a, b) => a.locale.localeCompare(b.locale) || a.name.localeCompare(b.name))
 }
 
+// The engine refuses a Select with more than this many options, and macOS
+// ships far more voices than that (216 on macOS 27), so voices are picked
+// in two steps: a language, then a voice in it.
+export const MAX_SELECT_OPTIONS = 64
+
+export const languageOf = (locale: string) => locale.split('_')[0] ?? locale
+
+export function languageLabel(code: string) {
+  try {
+    return new Intl.DisplayNames(undefined, { type: 'language' }).of(code) ?? code
+  } catch {
+    return code
+  }
+}
+
+// Voices by language code, languages in label order.
+export function groupVoices(voices: readonly AfkVoice[]) {
+  const groups = new Map<string, AfkVoice[]>()
+  for (const voice of voices) {
+    const code = languageOf(voice.locale)
+    groups.set(code, [...(groups.get(code) ?? []), voice])
+  }
+  return new Map([...groups].sort(([a], [b]) => languageLabel(a).localeCompare(languageLabel(b))))
+}
+
+// macOS names many voices with their language already ("Samantha (English
+// (US))"); the rest get their locale so en_US and en_GB voices tell apart.
+export const voiceLabel = (voice: AfkVoice) => (voice.name.includes('(') ? voice.name : `${voice.name} (${voice.locale})`)
+
 export const clip = (text: string, limit: number) => {
   const flat = text.replace(/\s+/g, ' ').trim()
   return flat.length <= limit ? flat : `${flat.slice(0, limit - 1).trimEnd()}…`

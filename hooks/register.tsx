@@ -6,12 +6,17 @@ import {
   AUTO_AWAY_CHOICES,
   DEFAULT_SETTINGS,
   PING_KINDS,
+  MAX_SELECT_OPTIONS,
   PING_LABELS,
   basename,
   checkHandle,
   clip,
   formatAgo,
+  groupVoices,
+  languageLabel,
+  languageOf,
   normalizeSettings,
+  voiceLabel,
   parseVoices,
 } from './settings'
 
@@ -32,6 +37,7 @@ const settingsAtom = atom({ plugin: 'afk', key: 'settings' } as const, DEFAULT_S
 const awayAtom = atom({ plugin: 'afk', key: 'isAway' } as const, false)
 const autoAwayAtom = atom({ plugin: 'afk', key: 'isAutoAway' } as const, false)
 const voicesAtom = atom({ plugin: 'afk', key: 'voices' } as const, [] as AfkVoice[])
+const voiceLanguageAtom = atom({ plugin: 'afk', key: 'voiceLanguage' } as const, null as string | null)
 const fieldErrorsAtom = atom({ plugin: 'afk', key: 'fieldErrors' } as const, {} as Record<string, string>)
 const lastTestAtom = atom({ plugin: 'afk', key: 'lastTest' } as const, null as AfkTestResult | null)
 
@@ -227,6 +233,18 @@ async function saveHandle($: Api, field: 'primary' | 'fallback', value: string) 
 
 async function runVoiceTest($: Api) {
   const settings = await loadSettings($)
+  // `say` exits 0 for a voice that isn't installed and quietly uses the
+  // system voice, so its exit code can't confirm the voice.
+  await loadVoices($)
+  const voices = await read($, voicesAtom)
+  if (settings.voice.name !== '' && voices.length > 0 && !voices.some(voice => voice.name === settings.voice.name)) {
+    await update($, lastTestAtom, () => ({
+      channel: 'voice',
+      isOk: false,
+      detail: `${settings.voice.name} isn't installed, so pings would use the system voice. Pick another voice.`,
+    }))
+    return
+  }
   const error = await speak($, settings, 'This is how AFK pings will sound.')
   const voiceName = settings.voice.name === '' ? 'the system voice' : settings.voice.name
   await update($, lastTestAtom, () =>
@@ -429,6 +447,7 @@ export const register: Register = on => {
     const away = await read($, awayAtom)
     const isAuto = await read($, autoAwayAtom)
     const voices = await read($, voicesAtom)
+    const pickedLanguage = await read($, voiceLanguageAtom)
     const errors = await read($, fieldErrorsAtom)
     const lastTest = await read($, lastTestAtom)
     const onOff = (isOn: boolean) => (isOn ? 'on' : 'off')
@@ -446,13 +465,27 @@ export const register: Register = on => {
         ? <Text color={lastTest.isOk ? 'green' : 'red'}>{lastTest.detail}</Text>
         : null
 
+    const groups = groupVoices(voices)
+    const savedVoice = voices.find(voice => voice.name === settings.voice.name)
+    const language =
+      (pickedLanguage !== null && groups.has(pickedLanguage) ? pickedLanguage : undefined) ??
+      (savedVoice !== undefined ? languageOf(savedVoice.locale) : undefined) ??
+      (groups.has('en') ? 'en' : groups.keys().next().value) ??
+      ''
+    const languageOptions = [...groups.keys()]
+      .slice(0, MAX_SELECT_OPTIONS)
+      .map(code => ({ value: code, label: languageLabel(code) }))
+    // "System voice" takes one of the slots.
     const voiceOptions = [
       { value: SYSTEM_VOICE, label: 'System voice' },
-      ...voices.map(voice => ({ value: voice.name, label: `${voice.name} (${voice.locale})` })),
+      ...(groups.get(language) ?? [])
+        .slice(0, MAX_SELECT_OPTIONS - 1)
+        .map(voice => ({ value: voice.name, label: voiceLabel(voice) })),
     ]
-    // Keep a saved voice pickable even before the list loads.
-    if (settings.voice.name !== '' && !voices.some(voice => voice.name === settings.voice.name)) {
-      voiceOptions.push({ value: settings.voice.name, label: settings.voice.name })
+    // Keep a saved voice pickable when it isn't in the language shown.
+    if (settings.voice.name !== '' && !voiceOptions.some(option => option.value === settings.voice.name)) {
+      voiceOptions.splice(1, 0, { value: settings.voice.name, label: settings.voice.name })
+      voiceOptions.length = Math.min(voiceOptions.length, MAX_SELECT_OPTIONS)
     }
 
     const awayOptions = AUTO_AWAY_CHOICES.map(minutes => ({
@@ -485,6 +518,15 @@ export const register: Register = on => {
             label={`Speak pings: ${onOff(settings.voice.isEnabled)}`}
             onPress={toggle(s => ({ ...s, voice: { ...s.voice, isEnabled: !s.voice.isEnabled } }))}
           />
+          {Select !== undefined && languageOptions.length > 0 && (
+            <Select
+              key="voice-language"
+              label="Language"
+              options={languageOptions}
+              value={language}
+              onSelect={value => void update($, voiceLanguageAtom, () => value)}
+            />
+          )}
           {Select !== undefined ? (
             <Select
               key="voice-name"
@@ -497,6 +539,9 @@ export const register: Register = on => {
             />
           ) : (
             <Text>{`Voice: ${settings.voice.name === '' ? 'System voice' : settings.voice.name}`}</Text>
+          )}
+          {settings.voice.name !== '' && voices.length > 0 && savedVoice === undefined && (
+            <Text color="yellow">{`${settings.voice.name} isn't installed on this Mac, so pings use the system voice.`}</Text>
           )}
           {voices.length === 0 && <Text dimColor>The voice list loads from macOS. If it stays empty, `say` isn't available.</Text>}
           <Text dimColor>If you use a screen reader, pick a voice other than its voice so pings stand out.</Text>

@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { checkHandle, normalizeSettings, parseVoices } from '../hooks/settings'
+import { SAY_VOICES_OUTPUT } from './fixtures/voices'
 
 const PLUGIN = 'afk'
 const MINUTE = 60_000
@@ -43,9 +44,7 @@ function harness(on: TestOn, options: { store?: Record<string, unknown>; exitCod
   })
   on('process.run', (_$, e) => {
     runs.push([...e.argv])
-    const stdout = e.argv[0] === 'say' && e.argv[2] === '?'
-      ? 'Samantha            en_US    # Hello! My name is Samantha.\nEddy (German (Germany)) de_DE    # Hallo!\n'
-      : ''
+    const stdout = e.argv[0] === 'say' && e.argv[2] === '?' ? SAY_VOICES_OUTPUT : ''
     return { value: { exitCode, stdout, stderr: exitCode === 0 ? '' : 'boom', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('session.cwd', () => ({ value: '/Users/someone/project' }))
@@ -208,6 +207,7 @@ describe('setup pane', () => {
     test(`${surface}: an invalid address shows an error and saves nothing`, async ($, on) => {
       const h = harness(on, { store: {} })
       await start($)
+      await $.command.run({ command: 'afk', args: 'setup' } as never)
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'afk-setup', props: PANE_PROPS })
 
       await ui.input({ key: 'primary', text: 'not a handle' })
@@ -218,6 +218,7 @@ describe('setup pane', () => {
     test(`${surface}: a valid address saves and turns texts on`, async ($, on) => {
       const h = harness(on, { store: {} })
       await start($)
+      await $.command.run({ command: 'afk', args: 'setup' } as never)
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'afk-setup', props: PANE_PROPS })
 
       await ui.input({ key: 'primary', text: HANDLE })
@@ -233,19 +234,33 @@ describe('setup pane', () => {
       await $.command.run({ command: 'afk', args: 'setup' } as never)
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'afk-setup', props: PANE_PROPS })
 
-      await ui.select({ key: 'voice-name', value: 'Samantha' })
+      await ui.select({ key: 'voice-name', value: 'Samantha (English (US))' })
       await ui.press({ key: 'ping-approval' })
       await ui.select({ key: 'auto-away', value: '10' })
       const saved = normalizeSettings(h.store.get('settings'))
-      expect(saved.voice.name).toBe('Samantha')
+      expect(saved.voice.name).toBe('Samantha (English (US))')
       expect(saved.pings.approval).toBe(false)
       expect(saved.autoAwayMinutes).toBe(10)
     })
 
-    test(`${surface}: the voice test reports what happened`, async ($, on) => {
+    test(`${surface}: a voice in another language is picked through the language picker`, async ($, on) => {
+      const h = harness(on, { store: {} })
+      await start($)
+      await $.command.run({ command: 'afk', args: 'setup' } as never)
+      const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'afk-setup', props: PANE_PROPS })
+
+      const englishOnly = (await ui.find({ key: 'voice-name' }))?.props.options as Array<{ value: string }>
+      expect(englishOnly.some(option => option.value === 'Thomas')).toBe(false)
+      await ui.select({ key: 'voice-language', value: 'fr' })
+      await ui.select({ key: 'voice-name', value: 'Thomas' })
+      expect(normalizeSettings(h.store.get('settings')).voice.name).toBe('Thomas')
+    })
+
+        test(`${surface}: the voice test reports what happened`, async ($, on) => {
       const h = harness(on, { store: {} })
       const { runs } = h
       await start($)
+      await $.command.run({ command: 'afk', args: 'setup' } as never)
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'afk-setup', props: PANE_PROPS })
 
       await ui.press({ key: 'voice-test' })
@@ -253,6 +268,19 @@ describe('setup pane', () => {
       expect(await ui.find({ type: 'Text', text: 'Spoke with the system voice.' })).toBeDefined()
     })
   }
+
+  test('the voice test refuses a voice that is not installed instead of trusting say', async ($, on) => {
+    const h = harness(on, { store: { settings: { voice: { isEnabled: true, name: 'Nonexistent Voice' } } } })
+    const { runs } = h
+    await start($)
+    await $.command.run({ command: 'afk', args: 'setup' } as never)
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'Pane', requestId: 'afk-setup', props: PANE_PROPS })
+
+    expect(await ui.find({ type: 'Text', text: /isn't installed on this Mac/ })).toBeDefined()
+    await ui.press({ key: 'voice-test' })
+    expect(await ui.find({ type: 'Text', text: /isn't installed, so pings would use the system voice/ })).toBeDefined()
+    expect(runs.some(argv => argv[0] === 'say' && argv[2] !== '?')).toBe(false)
+  })
 
   test('mobile: draws without fields and still toggles AFK', async ($, on) => {
     const h = harness(on, { store: configured })
