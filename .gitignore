@@ -1,0 +1,4 @@
+# Written by Claude Code's /plugin-types; regenerate rather than commit.
+.claude/
+node_modules/
+.DS_Store
