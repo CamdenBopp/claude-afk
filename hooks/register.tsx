@@ -57,6 +57,15 @@ const fieldErrorsAtom = atom({ plugin: 'afk', key: 'fieldErrors' } as const, {} 
 const lastTestAtom = atom({ plugin: 'afk', key: 'lastTest' } as const, null as AfkTestResult | null)
 
 const PANE = 'afk-setup'
+// The tool Claude calls when you ask it, in words, to turn AFK on or off.
+const TOOL_NAME = 'set_afk'
+const TOOL = `mcp__afk__${TOOL_NAME}`
+const TOOL_DESCRIPTION = [
+  'Turns AFK pings on or off, or reports whether they are on.',
+  'With AFK on, the person gets a spoken ping and an iMessage when a turn finishes or Claude needs them.',
+  'Call it only when the person asks, for example "turn AFK on", "ping me when you are done", "I am stepping away", or "stop pinging me".',
+  'scope "session" (the default) changes this session; "all" changes every open session, for when the person says they are leaving the desk.',
+].join(' ')
 const SYSTEM_VOICE = 'system'
 
 // Where a prompt came from, as the engine stamps it (PromptOrigin.kind).
@@ -396,6 +405,19 @@ async function runAfk($: Api, args: string): Promise<{ text: string }> {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    await $.tool.register({
+      name: TOOL_NAME,
+      description: TOOL_DESCRIPTION,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['on', 'off', 'status'] },
+          scope: { type: 'string', enum: ['session', 'all'], default: 'session' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+    })
     await $.command.register({
       name: 'afk',
       description: 'Get a spoken and iMessage ping when Claude finishes or needs you',
@@ -420,6 +442,23 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'afk' }, ($, e) => runAfk($, e.args))
+
+  on('tool.call', { tool: TOOL }, async ($, e) => {
+    // A plugin tool's arguments arrive spread on the event, beside `tool`.
+    const { action, scope } = e
+    if (action !== 'on' && action !== 'off' && action !== 'status') {
+      return { deny: 'action must be "on", "off" or "status".' }
+    }
+    if (scope !== undefined && scope !== 'session' && scope !== 'all') {
+      return { deny: 'scope must be "session" or "all".' }
+    }
+    const args = action === 'status' ? 'status' : scope === 'all' ? `${action} all` : action
+    return { result: (await runAfk($, args)).text }
+  })
+
+  // Turning your own notifications on or off touches nothing outside this
+  // plugin, so it doesn't need a permission dialog.
+  on('tool.check', { tool: TOOL }, () => ({ decision: 'allow', reason: 'AFK only changes this plugin\'s own ping setting.' }))
 
   on('prompt.submit', async ($, e, next) => {
     const result = await next(e)

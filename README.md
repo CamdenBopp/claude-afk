@@ -59,6 +59,8 @@ On the phone, the pane shows your settings and its buttons work, but you can't e
 
 `/afk` runs right away even while Claude is mid-turn, so you can turn it on on your way out.
 
+You can also just ask, in the middle of a session: "turn AFK on", "ping me when you're done", "I'm leaving, turn it on everywhere", "stop pinging me". Claude calls the plugin's `set_afk` tool, which does exactly what the matching `/afk` command does. The tool only changes this plugin's own setting, so it runs without a permission prompt.
+
 ## How AFK decides
 
 Each session starts with its project's setting, or the global default if the project uses the default. After that, the newest decision wins: `/afk` in the session, or `/afk on all` / `off all` from any session. An "all" only covers sessions that were open when you ran it; a session opened later starts from its project's setting.

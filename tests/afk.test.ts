@@ -48,6 +48,7 @@ function harness(on: TestOn, options: HarnessOptions = {}) {
   const { exitCode = 0 } = options
   const repoRoot = options.repoRoot === undefined ? REPO_ROOT : options.repoRoot
   const runs: string[][] = []
+  const tools: string[] = []
   const store = new Map<string, unknown>(Object.entries(options.store ?? {}))
   const clock = mock.clock(on, { now: options.now ?? 0 })
   on('store.get', (_$, e) => ({ value: store.get(e.key) }))
@@ -71,10 +72,16 @@ function harness(on: TestOn, options: HarnessOptions = {}) {
   on('ui.toast', () => ({ value: undefined }))
   on('ui.open', () => ({ value: undefined }) as never)
   on('command.register', () => ({ value: undefined }) as never)
+  on('tool.register', (_$, e) => {
+    tools.push(e.name)
+    return { value: { tool: `mcp__afk__${e.name}` } } as never
+  })
+  // Beneath the plugin's own allow: what the engine would decide unasked.
+  on('tool.check', () => ({ decision: 'ask' }) as never)
   on('session.start', (_$, e) => ({ cwd: e.cwd }) as never)
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
-  return { runs, store, clock }
+  return { runs, store, clock, tools }
 }
 
 async function start($: Engine) {
@@ -174,6 +181,59 @@ describe('/afk command', () => {
     expect(h.store.has('isAway')).toBe(false)
     expect(h.store.has('isAutoAway')).toBe(false)
     expect(await isAwayHere($)).toBe(false)
+  })
+})
+
+describe('set_afk tool', () => {
+  const TOOL = 'mcp__afk__set_afk'
+  const call = ($: Engine, args: Record<string, unknown>) =>
+    $.tool.call({ tool: TOOL, tool_use_id: 'toolu_1', ...args } as never) as Promise<{ result?: unknown; deny?: string; isError?: true; text?: string }>
+
+  test('is registered when the session starts', async ($, on) => {
+    const h = harness(on, { store: configured })
+    await start($)
+    expect(h.tools).toEqual(['set_afk'])
+  })
+
+  test('turns AFK on and off in this session, like the command', async ($, on) => {
+    harness(on, { store: configured })
+    await start($)
+    const turnedOn = await call($, { action: 'on' })
+    expect(String(turnedOn.result)).toContain('AFK on in this session')
+    expect(await isAwayHere($)).toBe(true)
+    await call($, { action: 'off' })
+    expect(await isAwayHere($)).toBe(false)
+  })
+
+  test('scope all writes the mark every session reads', async ($, on) => {
+    const h = harness(on, { now: 10 * MINUTE, store: configured })
+    await start($)
+    await h.clock.advance(MINUTE)
+    await call($, { action: 'on', scope: 'all' })
+    expect(h.store.get('awayAll')).toEqual({ isAway: true, isAuto: false, at: 11 * MINUTE })
+  })
+
+  test('status reports without changing anything', async ($, on) => {
+    harness(on, { store: configured })
+    await start($)
+    const status = await call($, { action: 'status' })
+    expect(String(status.result)).toContain('AFK is off in this session.')
+    expect(await isAwayHere($)).toBe(false)
+  })
+
+  test('refuses an action it does not know instead of guessing', async ($, on) => {
+    harness(on, { store: configured })
+    await start($)
+    const refused = await call($, { action: 'toggle' })
+    expect(refused.deny ?? refused.text).toBe('action must be "on", "off" or "status".')
+    expect(await isAwayHere($)).toBe(false)
+  })
+
+  test('needs no permission dialog', async ($, on) => {
+    harness(on, { store: configured })
+    await start($)
+    const verdict = await $.tool.check({ tool: TOOL, input: { action: 'on' } } as never)
+    expect(verdict.decision).toBe('allow')
   })
 })
 
