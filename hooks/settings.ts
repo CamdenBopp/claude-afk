@@ -167,6 +167,20 @@ export const clip = (text: string, limit: number) => {
   return flat.length <= limit ? flat : `${flat.slice(0, limit - 1).trimEnd()}…`
 }
 
+// A project path short enough to read aloud: the home folder as ~, and
+// anything deeper than two folders below it cut to ~/…/<last folder>.
+// "~/claude-afk" stays whole; a scratch workspace six folders down becomes
+// "~/…/scratch-2026-10-05-cea100".
+const HOME_PREFIX = /^\/Users\/[^/]+(?=\/|$)/
+const MAX_SHOWN_DEPTH = 2
+
+export function shortPath(path: string) {
+  const fromHome = path.replace(HOME_PREFIX, '~').replace(/\/+$/, '')
+  if (!fromHome.startsWith('~')) return fromHome
+  const parts = fromHome.split('/').slice(1)
+  return parts.length <= MAX_SHOWN_DEPTH ? fromHome : `~/…/${parts.at(-1)}`
+}
+
 export const basename = (path: string) => path.replace(/\/+$/, '').split('/').pop() || path
 
 export function formatAgo(ms: number) {

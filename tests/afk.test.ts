@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { checkHandle, effectiveAway, normalizeSettings, parseVoices } from '../hooks/settings'
+import { checkHandle, effectiveAway, normalizeSettings, parseVoices, shortPath } from '../hooks/settings'
 import { SAY_VOICES_OUTPUT } from './fixtures/voices'
 
 const PLUGIN = 'afk'
@@ -120,6 +120,13 @@ describe('settings helpers', () => {
       'Samantha            en_US    # Hello\nEddy (English (US)) en_US    # Hi\nThomas              fr_FR    # Bonjour\n',
     )
     expect(voices.map(v => v.name)).toEqual(['Eddy (English (US))', 'Samantha', 'Thomas'])
+  })
+
+  test('shortPath keeps short paths whole and cuts deep ones to the last folder', async () => {
+    expect(shortPath('/Users/someone/claude-afk')).toBe('~/claude-afk')
+    expect(shortPath('/Users/someone/genui/enchanted/')).toBe('~/genui/enchanted')
+    expect(shortPath('/Users/someone/Library/Application Support/Claude/scratch/abc/scratch-2026')).toBe('~/…/scratch-2026')
+    expect(shortPath('/opt/work/repo')).toBe('/opt/work/repo')
   })
 
   test('normalizeSettings fills in fields an older store lacks', async () => {
@@ -507,6 +514,7 @@ describe('setup pane', () => {
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'afk-setup', props: PANE_PROPS })
 
       expect(await ui.find({ type: 'Text', text: 'This project: project' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: '~/project' })).toBeDefined()
       await ui.select({ key: 'project-start-away', value: 'on' })
       await ui.select({ key: 'project-auto-away', value: '15' })
       expect(h.store.get('projects')).toEqual({ [REPO_ROOT]: { startAway: 'on', autoAwayMinutes: 15 } })

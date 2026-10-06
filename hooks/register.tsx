@@ -23,6 +23,7 @@ import {
   normalizeSettings,
   reachProblem,
   readMark,
+  shortPath,
   startsAway,
   voiceLabel,
   parseVoices,
@@ -768,7 +769,7 @@ export const register: Register = on => {
 
         <Box flexDirection="column">
           {heading(`This project: ${basename(project.key)}`)}
-          <Text dimColor>{project.key}</Text>
+          <Text dimColor>{shortPath(project.key)}</Text>
           {Select !== undefined ? (
             <Box flexDirection="column">
               <Select
