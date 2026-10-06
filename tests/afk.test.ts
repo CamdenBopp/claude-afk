@@ -72,6 +72,7 @@ function harness(on: TestOn, options: HarnessOptions = {}) {
   on('ui.toast', () => ({ value: undefined }))
   on('ui.open', () => ({ value: undefined }) as never)
   on('command.register', () => ({ value: undefined }) as never)
+  on('command.run', () => ({ text: '' }) as never)
   on('tool.register', (_$, e) => {
     tools.push(e.name)
     return { value: { tool: `mcp__afk__${e.name}` } } as never
@@ -89,7 +90,8 @@ async function start($: Engine) {
 }
 
 async function afk($: Engine, args: string) {
-  return (await $.command.run({ command: 'afk', args } as never)).text ?? ''
+  // A neutral origin: neither the Mac nor the phone.
+  return (await $.command.run({ command: 'afk', args, origin: { kind: 'plugin', name: 'test' } } as never)).text ?? ''
 }
 
 async function isAwayHere($: Engine) {
@@ -315,6 +317,27 @@ describe('automatic AFK', () => {
     await h.clock.advance(MINUTE)
     h.store.set('lastMacMessageAt', 17 * MINUTE)
     expect(await isAwayHere($)).toBe(false)
+  })
+
+  test('a slash command typed on the Mac counts as Mac activity', async ($, on) => {
+    const h = harness(on, { now: 10 * MINUTE, store: configured })
+    await start($)
+    await submitFrom($, 'composer')
+    await h.clock.advance(6 * MINUTE)
+    await submitFrom($, 'bridge')
+    expect(await isAwayHere($)).toBe(true)
+
+    await h.clock.advance(MINUTE)
+    await $.command.run({ command: 'compact', args: '', origin: { kind: 'composer' } } as never)
+    expect(h.store.get('lastMacMessageAt')).toBe(17 * MINUTE)
+    expect(await isAwayHere($)).toBe(false)
+  })
+
+  test('a slash command from the phone is not Mac activity', async ($, on) => {
+    const h = harness(on, { now: 10 * MINUTE, store: configured })
+    await start($)
+    await $.command.run({ command: 'compact', args: '', origin: { kind: 'bridge' } } as never)
+    expect(h.store.has('lastMacMessageAt')).toBe(false)
   })
 
   test('a phone message inside the quiet period leaves AFK off', async ($, on) => {

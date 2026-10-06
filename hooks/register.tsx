@@ -185,6 +185,15 @@ async function setAwayAll($: Api, away: boolean) {
   await syncState($)
 }
 
+// The person typed something on this Mac. Recording the time is what ends
+// automatic AFK, here and in every other session (see effectiveAway).
+async function noteMacActivity($: Api, now: number) {
+  const wasAutoAway = (await currentAway($)).isAuto
+  await $.store.set(LAST_MAC_KEY, now)
+  await syncState($)
+  if (wasAutoAway) $.ui.toast('AFK off: you typed on this Mac.')
+}
+
 async function projectName($: Api) {
   return basename(await projectKey($))
 }
@@ -441,7 +450,19 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'afk' }, ($, e) => runAfk($, e.args))
+  // One hook for every slash command: a command typed on this Mac is Mac
+  // activity, /afk included, and /afk itself is answered here.
+  on('command.run', async ($, e, next) => {
+    // The engine stamps every run with an origin; a missing one must not
+    // take /afk down with it.
+    const kind = e.origin?.kind
+    if (kind !== undefined && MAC_ORIGINS.includes(kind)) {
+      const now = await $.clock.now()
+      await recordOrigin($, { kind, at: now })
+      await noteMacActivity($, now)
+    }
+    return e.command === 'afk' ? runAfk($, e.args) : next(e)
+  })
 
   on('tool.call', { tool: TOOL }, async ($, e) => {
     // A plugin tool's arguments arrive spread on the event, beside `tool`.
@@ -467,12 +488,7 @@ export const register: Register = on => {
     await recordOrigin($, { kind, at: now })
 
     if (MAC_ORIGINS.includes(kind)) {
-      const wasAutoAway = (await currentAway($)).isAuto
-      // Recording the time is what ends automatic AFK, here and in every
-      // other session (see effectiveAway).
-      await $.store.set(LAST_MAC_KEY, now)
-      await syncState($)
-      if (wasAutoAway) $.ui.toast('AFK off: you sent a message from this Mac.')
+      await noteMacActivity($, now)
     } else if (PHONE_ORIGINS.includes(kind) && !(await isAway($))) {
       const autoAwayMinutes = autoAwayMinutesFor(await loadSettings($), (await loadProject($)).settings)
       const lastMac = await $.store.get(LAST_MAC_KEY)
