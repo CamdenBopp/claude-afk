@@ -1,4 +1,4 @@
-import type { AfkPingKind, AfkSettings, AfkVoice } from '../types'
+import type { AfkMark, AfkPingKind, AfkProjectSettings, AfkSettings, AfkVoice } from '../types'
 
 export const DEFAULT_SETTINGS: AfkSettings = {
   voice: { isEnabled: true, name: '' },
@@ -6,7 +6,10 @@ export const DEFAULT_SETTINGS: AfkSettings = {
   messages: { isEnabled: false, primary: '', fallback: '' },
   pings: { finished: true, question: true, plan: true, approval: true, error: true },
   autoAwayMinutes: 5,
+  startAway: false,
 }
+
+export const DEFAULT_PROJECT: AfkProjectSettings = { startAway: 'default', autoAwayMinutes: null }
 
 // Each reads after "Ping when".
 export const PING_LABELS: Record<AfkPingKind, string> = {
@@ -52,7 +55,43 @@ export function normalizeSettings(stored: unknown): AfkSettings {
     },
     pings,
     autoAwayMinutes: typeof minutes === 'number' && minutes >= 0 ? minutes : DEFAULT_SETTINGS.autoAwayMinutes,
+    startAway: raw.startAway === true,
   }
+}
+
+export function normalizeProject(stored: unknown): AfkProjectSettings {
+  const raw = (stored && typeof stored === 'object' ? stored : {}) as Partial<AfkProjectSettings>
+  const minutes = raw.autoAwayMinutes
+  return {
+    startAway: raw.startAway === 'on' || raw.startAway === 'off' ? raw.startAway : 'default',
+    autoAwayMinutes: typeof minutes === 'number' && minutes >= 0 ? minutes : null,
+  }
+}
+
+// Whether a new session in a project starts away.
+export const startsAway = (settings: AfkSettings, project: AfkProjectSettings) =>
+  project.startAway === 'default' ? settings.startAway : project.startAway === 'on'
+
+export const autoAwayMinutesFor = (settings: AfkSettings, project: AfkProjectSettings) =>
+  project.autoAwayMinutes ?? settings.autoAwayMinutes
+
+export const describeAutoAway = (minutes: number) => (minutes === 0 ? 'Never' : `After ${minutes} minutes`)
+
+// Whether a session is away right now. The newer of its own mark and the
+// all-sessions mark wins; a tie goes to the session's own. AFK that a phone
+// message turned on ends once the Mac sends a message after it.
+export function effectiveAway(own: AfkMark | null, all: AfkMark | null, lastMacAt: number | undefined) {
+  const latest = own === null ? all : all === null || own.at >= all.at ? own : all
+  if (latest === null || !latest.isAway) return { isAway: false, isAuto: false }
+  if (latest.isAuto && lastMacAt !== undefined && lastMacAt > latest.at) return { isAway: false, isAuto: false }
+  return { isAway: true, isAuto: latest.isAuto }
+}
+
+export function readMark(stored: unknown): AfkMark | null {
+  if (!stored || typeof stored !== 'object') return null
+  const raw = stored as Partial<AfkMark>
+  if (typeof raw.isAway !== 'boolean' || typeof raw.at !== 'number') return null
+  return { isAway: raw.isAway, isAuto: raw.isAuto === true, at: raw.at }
 }
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/

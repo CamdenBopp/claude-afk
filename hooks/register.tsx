@@ -1,42 +1,56 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AfkPingKind, AfkSettings, AfkTestResult, AfkVoice } from '../types'
+import type { AfkMark, AfkPingKind, AfkProjectSettings, AfkSettings, AfkTestResult, AfkVoice } from '../types'
 import {
   AUTO_AWAY_CHOICES,
+  DEFAULT_PROJECT,
   DEFAULT_SETTINGS,
   PING_KINDS,
   MAX_SELECT_OPTIONS,
   PING_LABELS,
+  autoAwayMinutesFor,
   basename,
   checkHandle,
   clip,
+  describeAutoAway,
+  effectiveAway,
   formatAgo,
   groupVoices,
   languageLabel,
   languageOf,
+  normalizeProject,
   normalizeSettings,
   reachProblem,
+  readMark,
+  startsAway,
   voiceLabel,
   parseVoices,
 } from './settings'
 
 type Api = EngineInterface
 
-// $.store keys. The store outlives sessions: being away is about the person,
-// not one conversation, so every session with the plugin shares these.
+// $.store keys, shared by every session with the plugin.
 const SETTINGS_KEY = 'settings'
-const AWAY_KEY = 'isAway'
-// True when a phone message turned AFK on, so a message typed on this Mac
-// turns it back off. AFK turned on by hand stays on.
-const AUTO_AWAY_KEY = 'isAutoAway'
+// Per-project overrides, keyed by repo root.
+const PROJECTS_KEY = 'projects'
+// The mark `/afk on all` and `/afk off all` write; every session reads it.
+const AWAY_ALL_KEY = 'awayAll'
+// When any session last got a message typed on this Mac: the person is here.
 const LAST_MAC_KEY = 'lastMacMessageAt'
 const ORIGIN_LOG_KEY = 'recentOrigins'
+// Version 0.1 kept one global AFK switch under these keys.
+const LEGACY_KEYS = ['isAway', 'isAutoAway']
 
 // $.state: what the setup pane draws from.
 const settingsAtom = atom({ plugin: 'afk', key: 'settings' } as const, DEFAULT_SETTINGS)
+// What the pane shows: this session's AFK as `effectiveAway` decides it.
 const awayAtom = atom({ plugin: 'afk', key: 'isAway' } as const, false)
 const autoAwayAtom = atom({ plugin: 'afk', key: 'isAutoAway' } as const, false)
+// This session's own decision. $.state outlives a hot reload, so a reload
+// doesn't put the session back to its project's default.
+const sessionMarkAtom = atom({ plugin: 'afk', key: 'sessionMark' } as const, null as AfkMark | null)
+const projectAtom = atom({ plugin: 'afk', key: 'project' } as const, null as { key: string; settings: AfkProjectSettings } | null)
 const voicesAtom = atom({ plugin: 'afk', key: 'voices' } as const, [] as AfkVoice[])
 const voiceLanguageAtom = atom({ plugin: 'afk', key: 'voiceLanguage' } as const, null as string | null)
 const fieldErrorsAtom = atom({ plugin: 'afk', key: 'fieldErrors' } as const, {} as Record<string, string>)
@@ -57,6 +71,8 @@ const PHONE_ORIGINS: readonly string[] = ['bridge']
 const APPROVAL_GRACE_MS = 15_000
 
 const MINUTE_MS = 60_000
+// How often the status line rereads marks other sessions may have written.
+const STATUS_REFRESH_MS = 30_000
 const ORIGIN_LOG_LENGTH = 20
 const SPOKEN_SNIPPET_CHARS = 80
 const TEXT_SNIPPET_CHARS = 300
@@ -89,19 +105,56 @@ async function saveSettings($: Api, change: (settings: AfkSettings) => AfkSettin
   return next
 }
 
-async function isAway($: Api) {
-  return (await $.store.get(AWAY_KEY)) === true
+async function loadProjects($: Api) {
+  const stored = await $.store.get(PROJECTS_KEY)
+  return (stored && typeof stored === 'object' ? stored : {}) as Record<string, unknown>
 }
 
-// Copies what the store holds into the pane's state; another session may
-// have changed it since this one last looked.
+// The repo root (the main working tree's, for a worktree), or the session's
+// folder outside git.
+async function projectKey($: Api) {
+  const known = await read($, projectAtom)
+  if (known !== null) return known.key
+  const repo = await $.session.repo()
+  return repo?.root ?? (await $.session.root())
+}
+
+async function loadProject($: Api) {
+  const key = await projectKey($)
+  return { key, settings: normalizeProject((await loadProjects($))[key]) }
+}
+
+async function saveProject($: Api, change: (project: AfkProjectSettings) => AfkProjectSettings) {
+  const { key, settings } = await loadProject($)
+  const next = change(settings)
+  await $.store.set(PROJECTS_KEY, { ...(await loadProjects($)), [key]: next })
+  await update($, projectAtom, () => ({ key, settings: next }))
+}
+
+async function currentAway($: Api) {
+  const lastMac = await $.store.get(LAST_MAC_KEY)
+  return effectiveAway(
+    await read($, sessionMarkAtom),
+    readMark(await $.store.get(AWAY_ALL_KEY)),
+    typeof lastMac === 'number' ? lastMac : undefined,
+  )
+}
+
+async function isAway($: Api) {
+  return (await currentAway($)).isAway
+}
+
+// Rereads what other sessions may have changed (settings, the project's
+// overrides, the all-sessions mark, the Mac's last message) into the pane's
+// state and the status line.
 async function syncState($: Api) {
   const settings = await loadSettings($)
-  const away = await isAway($)
-  const isAuto = away && (await $.store.get(AUTO_AWAY_KEY)) === true
+  const project = await loadProject($)
+  const { isAway: away, isAuto } = await currentAway($)
   await update($, settingsAtom, () => settings)
-  await update($, awayAtom, () => away)
-  await update($, autoAwayAtom, () => isAuto)
+  await update($, projectAtom, () => project)
+  if ((await read($, awayAtom)) !== away) await update($, awayAtom, () => away)
+  if ((await read($, autoAwayAtom)) !== isAuto) await update($, autoAwayAtom, () => isAuto)
   showStatus($, away, isAuto)
 }
 
@@ -109,16 +162,22 @@ function showStatus($: Api, away: boolean, isAuto: boolean) {
   return $.ui.status(away ? (isAuto ? 'AFK: auto, pings on' : 'AFK: pings on') : undefined)
 }
 
+// This session only.
 async function setAway($: Api, away: boolean, isAuto: boolean) {
-  await $.store.set(AWAY_KEY, away)
-  await $.store.set(AUTO_AWAY_KEY, away && isAuto)
-  await update($, awayAtom, () => away)
-  await update($, autoAwayAtom, () => away && isAuto)
-  showStatus($, away, away && isAuto)
+  const at = await $.clock.now()
+  await update($, sessionMarkAtom, () => ({ isAway: away, isAuto: away && isAuto, at }))
+  await syncState($)
+}
+
+// Every open session: each reads this mark, and it outranks any older
+// decision of their own.
+async function setAwayAll($: Api, away: boolean) {
+  await $.store.set(AWAY_ALL_KEY, { isAway: away, isAuto: false, at: await $.clock.now() })
+  await syncState($)
 }
 
 async function projectName($: Api) {
-  return basename(await $.session.cwd())
+  return basename(await projectKey($))
 }
 
 async function sendOne($: Api, handle: string, text: string) {
@@ -274,15 +333,28 @@ export const register: Register = on => {
     await $.command.register({
       name: 'afk',
       description: 'Get a spoken and iMessage ping when Claude finishes or needs you',
-      argumentHint: '[on|off|setup|status|test]',
+      argumentHint: '[on|off|on all|off all|setup|status|test]',
       immediate: true,
     })
+    for (const key of LEGACY_KEYS) await $.store.delete(key)
+    const project = await loadProject($)
+    await update($, projectAtom, () => project)
+    // A new session takes its project's default, dated now, so an
+    // `/afk on all` from before it opened doesn't override it. A hot reload
+    // raises session.start again, but the mark is set by then, so the session
+    // keeps its state.
+    if ((await read($, sessionMarkAtom)) === null) {
+      const away = startsAway(await loadSettings($), project.settings)
+      const at = await $.clock.now()
+      await update($, sessionMarkAtom, () => ({ isAway: away, isAuto: false, at }))
+    }
     await syncState($)
+    $.clock.every(STATUS_REFRESH_MS, () => void syncState($))
     return next(e)
   })
 
   on('command.run', { command: 'afk' }, async ($, e) => {
-    const arg = e.args.trim().toLowerCase()
+    const arg = e.args.trim().toLowerCase().replace(/\s+/g, ' ')
     const wasAway = await isAway($)
     const settings = await loadSettings($)
 
@@ -292,14 +364,22 @@ export const register: Register = on => {
     }
 
     if (arg === 'status') {
-      const isAuto = (await $.store.get(AUTO_AWAY_KEY)) === true
+      const { isAuto } = await currentAway($)
+      const project = await loadProject($)
       const lastMac = await $.store.get(LAST_MAC_KEY)
       const now = await $.clock.now()
-      const state = wasAway ? (isAuto ? 'AFK is on (turned on from your phone).' : 'AFK is on.') : 'AFK is off.'
+      const state = wasAway
+        ? isAuto ? 'AFK is on in this session (turned on from your phone).' : 'AFK is on in this session.'
+        : 'AFK is off in this session.'
       const macLine = typeof lastMac === 'number'
         ? `Last message from this Mac: ${formatAgo(now - lastMac)}.`
         : 'No message from this Mac recorded yet.'
-      return { text: `${state} ${macLine}` }
+      const startLine = `New sessions in ${basename(project.key)} start with AFK ${startsAway(settings, project.settings) ? 'on' : 'off'}.`
+      const minutes = autoAwayMinutesFor(settings, project.settings)
+      const autoLine = minutes === 0
+        ? 'Automatic AFK is off here.'
+        : `Automatic AFK here: after ${minutes} quiet minutes on this Mac.`
+      return { text: [state, macLine, startLine, autoLine].join(' ') }
     }
 
     if (arg === 'test') {
@@ -319,18 +399,21 @@ export const register: Register = on => {
       }
     }
 
-    if (arg !== '' && arg !== 'on' && arg !== 'off') {
-      return { text: 'Usage: /afk [on|off|setup|status|test]. With no argument, /afk toggles.' }
+    const isAll = arg === 'on all' || arg === 'off all'
+    if (arg !== '' && arg !== 'on' && arg !== 'off' && !isAll) {
+      return { text: 'Usage: /afk [on|off|on all|off all|setup|status|test]. With no argument, /afk toggles this session.' }
     }
 
-    const away = arg === '' ? !wasAway : arg === 'on'
-    await setAway($, away, false)
-    if (!away) return { text: 'AFK off.' }
+    const away = arg === '' ? !wasAway : arg.startsWith('on')
+    if (isAll) await setAwayAll($, away)
+    else await setAway($, away, false)
+    const scope = isAll ? 'for every open session' : 'in this session'
+    if (!away) return { text: `AFK off ${scope}.` }
     const problem = reachProblem(settings)
     return {
       text: problem === undefined
-        ? 'AFK on. You will get a ping when a turn ends or Claude needs you.'
-        : `AFK on, but no ping will go out. ${problem} Run /afk setup.`,
+        ? `AFK on ${scope}. You will get a ping when a turn ends or Claude needs you.`
+        : `AFK on ${scope}, but no ping will go out. ${problem} Run /afk setup.`,
     }
   })
 
@@ -341,13 +424,14 @@ export const register: Register = on => {
     await recordOrigin($, { kind, at: now })
 
     if (MAC_ORIGINS.includes(kind)) {
+      const wasAutoAway = (await currentAway($)).isAuto
+      // Recording the time is what ends automatic AFK, here and in every
+      // other session (see effectiveAway).
       await $.store.set(LAST_MAC_KEY, now)
-      if ((await isAway($)) && (await $.store.get(AUTO_AWAY_KEY)) === true) {
-        await setAway($, false, false)
-        $.ui.toast('AFK off: you sent a message from this Mac.')
-      }
+      await syncState($)
+      if (wasAutoAway) $.ui.toast('AFK off: you sent a message from this Mac.')
     } else if (PHONE_ORIGINS.includes(kind) && !(await isAway($))) {
-      const { autoAwayMinutes } = await loadSettings($)
+      const autoAwayMinutes = autoAwayMinutesFor(await loadSettings($), (await loadProject($)).settings)
       const lastMac = await $.store.get(LAST_MAC_KEY)
       const sinceMac = typeof lastMac === 'number' ? now - lastMac : Infinity
       if (autoAwayMinutes > 0 && sinceMac > autoAwayMinutes * MINUTE_MS) {
@@ -449,6 +533,7 @@ export const register: Register = on => {
     const pickedLanguage = await read($, voiceLanguageAtom)
     const errors = await read($, fieldErrorsAtom)
     const lastTest = await read($, lastTestAtom)
+    const project = (await read($, projectAtom)) ?? { key: '', settings: DEFAULT_PROJECT }
 
     // An on/off setting. Where the surface has pickers it is an On/Off Select,
     // which announces its value. A button labelled "X: on" reads the same
@@ -475,8 +560,8 @@ export const register: Register = on => {
     const heading = (text: string) => <Text bold>{text}</Text>
 
     const statusLine = away
-      ? isAuto ? 'AFK is on. Your phone turned it on.' : 'AFK is on.'
-      : 'AFK is off.'
+      ? isAuto ? 'AFK is on in this session. Your phone turned it on.' : 'AFK is on in this session.'
+      : 'AFK is off in this session.'
 
     const testLine = (channel: AfkTestResult['channel']) =>
       lastTest !== null && lastTest.channel === channel
@@ -506,23 +591,22 @@ export const register: Register = on => {
       voiceOptions.length = Math.min(voiceOptions.length, MAX_SELECT_OPTIONS)
     }
 
-    const awayOptions = AUTO_AWAY_CHOICES.map(minutes => ({
-      value: String(minutes),
-      label: minutes === 0 ? 'Never' : `After ${minutes} minutes`,
-    }))
+    const awayOptions = AUTO_AWAY_CHOICES.map(minutes => ({ value: String(minutes), label: describeAutoAway(minutes) }))
 
     return (
       <Box flexDirection="column" gap={1} paddingX={1}>
         <Box flexDirection="column">
           {heading('Status')}
           <Text>{statusLine}</Text>
-          <Box flexDirection="row" gap={1}>
+          <Box flexDirection="row" flexWrap="wrap" gap={1}>
             <Button
               key="away"
               variant="primary"
-              label={away ? 'Turn AFK off' : 'Turn AFK on'}
+              label={away ? 'Turn AFK off here' : 'Turn AFK on here'}
               onPress={() => void setAway($, !away, false)}
             />
+            <Button key="away-all-on" label="Turn on for all sessions" onPress={() => void setAwayAll($, true)} />
+            <Button key="away-all-off" label="Turn off for all sessions" onPress={() => void setAwayAll($, false)} />
           </Box>
           {reachProblem(settings) !== undefined && <Text color="yellow">{reachProblem(settings)}</Text>}
         </Box>
@@ -607,20 +691,58 @@ export const register: Register = on => {
         </Box>
 
         <Box flexDirection="column">
-          {heading('Turn AFK on automatically')}
-          <Text dimColor>When a message comes from your phone through Remote Control and nothing has come from this Mac for a while. A message from this Mac turns it back off.</Text>
+          {heading('Defaults for every project')}
+          {setting('start-away', 'AFK in new sessions', settings.startAway, (s, startAway) => ({ ...s, startAway }))}
+          <Text dimColor>Turn AFK on automatically when a message comes from your phone through Remote Control and nothing has come from this Mac for a while. A message from this Mac turns it back off.</Text>
           {Select !== undefined ? (
             <Select
               key="auto-away"
-              label="Turn on"
+              label="Turn AFK on automatically"
               options={awayOptions}
               value={String(settings.autoAwayMinutes)}
               onSelect={value => void saveSettings($, s => ({ ...s, autoAwayMinutes: Number(value) }))}
             />
           ) : (
-            <Text>
-              {settings.autoAwayMinutes === 0 ? 'Never' : `After ${settings.autoAwayMinutes} minutes`}
-            </Text>
+            <Text>{`Turn AFK on automatically: ${describeAutoAway(settings.autoAwayMinutes)}`}</Text>
+          )}
+        </Box>
+
+        <Box flexDirection="column">
+          {heading(`This project: ${basename(project.key)}`)}
+          <Text dimColor>{project.key}</Text>
+          {Select !== undefined ? (
+            <Box flexDirection="column">
+              <Select
+                key="project-start-away"
+                label="AFK in new sessions here"
+                options={[
+                  { value: 'default', label: `Use default (${settings.startAway ? 'On' : 'Off'})` },
+                  ...onOffOptions,
+                ]}
+                value={project.settings.startAway}
+                onSelect={value =>
+                  void saveProject($, p => ({ ...p, startAway: value === 'on' || value === 'off' ? value : 'default' }))
+                }
+              />
+              <Select
+                key="project-auto-away"
+                label="Turn AFK on automatically here"
+                options={[
+                  { value: 'default', label: `Use default (${describeAutoAway(settings.autoAwayMinutes)})` },
+                  ...awayOptions,
+                ]}
+                value={project.settings.autoAwayMinutes === null ? 'default' : String(project.settings.autoAwayMinutes)}
+                onSelect={value =>
+                  void saveProject($, p => ({ ...p, autoAwayMinutes: value === 'default' ? null : Number(value) }))
+                }
+              />
+            </Box>
+          ) : (
+            <Box flexDirection="column">
+              <Text>{`AFK in new sessions here: ${startsAway(settings, project.settings) ? 'On' : 'Off'}${project.settings.startAway === 'default' ? ' (default)' : ''}`}</Text>
+              <Text>{`Turn AFK on automatically here: ${describeAutoAway(autoAwayMinutesFor(settings, project.settings))}${project.settings.autoAwayMinutes === null ? ' (default)' : ''}`}</Text>
+              <Text dimColor>Change these from the Mac.</Text>
+            </Box>
           )}
         </Box>
 

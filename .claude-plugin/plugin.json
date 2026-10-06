@@ -1,6 +1,6 @@
 {
   "name": "afk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Spoken and iMessage pings when Claude finishes a turn or needs you. Turns itself on when you reply from your phone.",
   "author": { "name": "Camden Bopp", "url": "https://github.com/CamdenBopp" },
   "license": "MIT",

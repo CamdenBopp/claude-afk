@@ -2,6 +2,8 @@
 
 A Claude Code plugin that tells you when Claude is done or stuck, so you can walk away from a long task. When you're away it says a short line out loud and sends you an iMessage each time a turn finishes, Claude asks you something, a plan is ready, or a tool call may be waiting on your approval.
 
+AFK is per session, so a long build in one project can ping you while another project stays quiet. Each project can say whether its new sessions start with AFK on, and `/afk on all` covers every open session when you get up from the desk.
+
 It can also turn itself on. If you reply from your phone through Remote Control and haven't typed anything on your Mac for a few minutes, it assumes you've stepped away. Your next message from the Mac turns it back off.
 
 ## Requirements
@@ -32,12 +34,13 @@ For every session, including the Code tab in the Claude desktop app, add the fol
 
 ## Set up
 
-Run `/afk setup`. The pane has four parts:
+Run `/afk setup`. The pane has these parts:
 
 - **Voice:** turn spoken pings on or off and pick any voice installed on your Mac. If you use a screen reader, pick a different voice from the one it uses so pings stand out.
 - **iMessage:** the email address or phone number to text, plus an optional fallback that's tried if the first send fails. Press Enter in a field to save it. Use "Send test message" to check it. Include the country code on a phone number, like +1 for the US.
 - **Ping me when:** an On/Off setting for each event that can send a ping.
-- **Turn AFK on automatically:** how long the Mac has to be quiet before a phone message turns AFK on, or Never.
+- **Defaults for every project:** whether new sessions start with AFK on, and how long the Mac has to be quiet before a phone message turns AFK on (or Never).
+- **This project:** the same two settings for the project you're in, or "Use default". A project is its git repository, so every worktree of a repo shares one setting. Outside git, the project is the folder.
 
 The first test message makes macOS ask whether Claude Code may control Messages. Allow it, or no texts will go out.
 
@@ -47,19 +50,22 @@ On the phone, the pane shows your settings and its buttons work, but you can't e
 
 | Command | What it does |
 | --- | --- |
-| `/afk` | Toggles AFK. |
-| `/afk on`, `/afk off` | Turns AFK on or off. |
+| `/afk` | Toggles AFK in this session. |
+| `/afk on`, `/afk off` | Turns AFK on or off in this session. |
+| `/afk on all`, `/afk off all` | Turns AFK on or off in every open session. |
 | `/afk setup` | Opens the setup pane. |
-| `/afk status` | Says whether AFK is on, and when this Mac last sent a message. |
+| `/afk status` | Says whether AFK is on here, when this Mac last sent a message, and this project's settings. |
 | `/afk test` | Sends one ping through every channel that's on. |
 
 `/afk` runs right away even while Claude is mid-turn, so you can turn it on on your way out.
 
-## How automatic AFK decides
+## How AFK decides
 
-Claude Code labels every message with where it came from. A message typed in the session itself is labelled `composer`. A message sent through Remote Control from a phone or browser is labelled `bridge`. The plugin records when the last `composer` message arrived, in any session that has the plugin loaded. A `bridge` message that arrives after the quiet period turns AFK on.
+Each session starts with its project's setting, or the global default if the project uses the default. After that, the newest decision wins: `/afk` in the session, or `/afk on all` / `off all` from any session. An "all" only covers sessions that were open when you ran it; a session opened later starts from its project's setting.
 
-AFK that you turned on yourself stays on until you turn it off. Only AFK that turned itself on switches off when you type on the Mac.
+Claude Code labels every message with where it came from. A message typed in the session itself is labelled `composer`. A message sent through Remote Control from a phone or browser is labelled `bridge`. The plugin records when the last `composer` message arrived, in any session that has the plugin loaded. A `bridge` message that arrives after the project's quiet period turns AFK on in that session.
+
+AFK that you turned on yourself stays on until you turn it off. AFK that turned itself on switches off as soon as you type on the Mac, in any session.
 
 ## Limits
 

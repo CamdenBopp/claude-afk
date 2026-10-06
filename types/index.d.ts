@@ -16,6 +16,27 @@ export type AfkSettings = {
   pings: Record<AfkPingKind, boolean>
   /** Minutes without a message from this Mac before a phone message turns AFK on. 0 is off. */
   autoAwayMinutes: number
+  /** Whether a new session starts with AFK on, unless its project says otherwise. */
+  startAway: boolean
+}
+
+/** One project's overrides of the global settings, keyed in the store by repo root. */
+export type AfkProjectSettings = {
+  /** `default` follows `AfkSettings.startAway`. */
+  startAway: 'default' | 'on' | 'off'
+  /** null follows `AfkSettings.autoAwayMinutes`. */
+  autoAwayMinutes: number | null
+}
+
+/**
+ * A decision about AFK and when it was made. A session keeps its own; `/afk on
+ * all` writes one every session reads. The newer one wins.
+ */
+export type AfkMark = {
+  isAway: boolean
+  /** Turned on by a phone message: a later message from the Mac cancels it. */
+  isAuto: boolean
+  at: number
 }
 
 export type AfkVoice = { name: string; locale: string }
@@ -28,6 +49,10 @@ declare module 'claude-code' {
       settings: AfkSettings
       isAway: boolean
       isAutoAway: boolean
+      /** This session's own AFK decision; null until session.start sets the default. */
+      sessionMark: AfkMark | null
+      /** The repo root (or folder) this session belongs to, and its overrides. */
+      project: { key: string; settings: AfkProjectSettings } | null
       voices: AfkVoice[]
       /** The language the voice picker shows; null follows the saved voice. */
       voiceLanguage: string | null
