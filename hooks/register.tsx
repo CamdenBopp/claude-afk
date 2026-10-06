@@ -328,6 +328,72 @@ async function runMessageTest($: Api) {
   )
 }
 
+// What `/afk <args>` does, shared with the set_afk tool so asking Claude in
+// words behaves exactly like typing the command.
+async function runAfk($: Api, args: string): Promise<{ text: string }> {
+  const arg = args.trim().toLowerCase().replace(/\s+/g, ' ')
+  const wasAway = await isAway($)
+  const settings = await loadSettings($)
+
+  if (arg === 'setup') {
+    await openSetup($)
+    return { text: 'AFK setup opened.' }
+  }
+
+  if (arg === 'status') {
+    const { isAuto } = await currentAway($)
+    const project = await loadProject($)
+    const lastMac = await $.store.get(LAST_MAC_KEY)
+    const now = await $.clock.now()
+    const state = wasAway
+      ? isAuto ? 'AFK is on in this session (turned on from your phone).' : 'AFK is on in this session.'
+      : 'AFK is off in this session.'
+    const macLine = typeof lastMac === 'number'
+      ? `Last message from this Mac: ${formatAgo(now - lastMac)}.`
+      : 'No message from this Mac recorded yet.'
+    const startLine = `New sessions in ${basename(project.key)} start with AFK ${startsAway(settings, project.settings) ? 'on' : 'off'}.`
+    const minutes = autoAwayMinutesFor(settings, project.settings)
+    const autoLine = minutes === 0
+      ? 'Automatic AFK is off here.'
+      : `Automatic AFK here: after ${minutes} quiet minutes on this Mac.`
+    return { text: [state, macLine, startLine, autoLine].join(' ') }
+  }
+
+  if (arg === 'test') {
+    await ping($, { spoken: 'AFK test from Claude.', text: `AFK test from Claude Code in ${await projectName($)}.` })
+    const canSend = settings.voice.isEnabled || (settings.messages.isEnabled && settings.messages.primary !== '')
+    return { text: canSend ? 'Test ping sent.' : 'Nothing to test: voice and iMessage are both off. Run /afk setup.' }
+  }
+
+  if (arg === 'origins') {
+    const log = await $.store.get(ORIGIN_LOG_KEY)
+    const list = Array.isArray(log) ? (log as OriginEntry[]) : []
+    const now = await $.clock.now()
+    return {
+      text: list.length === 0
+        ? 'No messages recorded yet.'
+        : list.map(o => `${formatAgo(now - o.at)}: ${o.kind}`).join('\n'),
+    }
+  }
+
+  const isAll = arg === 'on all' || arg === 'off all'
+  if (arg !== '' && arg !== 'on' && arg !== 'off' && !isAll) {
+    return { text: 'Usage: /afk [on|off|on all|off all|setup|status|test]. With no argument, /afk toggles this session.' }
+  }
+
+  const away = arg === '' ? !wasAway : arg.startsWith('on')
+  if (isAll) await setAwayAll($, away)
+  else await setAway($, away, false)
+  const scope = isAll ? 'for every open session' : 'in this session'
+  if (!away) return { text: `AFK off ${scope}.` }
+  const problem = reachProblem(settings)
+  return {
+    text: problem === undefined
+      ? `AFK on ${scope}. You will get a ping when a turn ends or Claude needs you.`
+      : `AFK on ${scope}, but no ping will go out. ${problem} Run /afk setup.`,
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -353,69 +419,7 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'afk' }, async ($, e) => {
-    const arg = e.args.trim().toLowerCase().replace(/\s+/g, ' ')
-    const wasAway = await isAway($)
-    const settings = await loadSettings($)
-
-    if (arg === 'setup') {
-      await openSetup($)
-      return { text: 'AFK setup opened.' }
-    }
-
-    if (arg === 'status') {
-      const { isAuto } = await currentAway($)
-      const project = await loadProject($)
-      const lastMac = await $.store.get(LAST_MAC_KEY)
-      const now = await $.clock.now()
-      const state = wasAway
-        ? isAuto ? 'AFK is on in this session (turned on from your phone).' : 'AFK is on in this session.'
-        : 'AFK is off in this session.'
-      const macLine = typeof lastMac === 'number'
-        ? `Last message from this Mac: ${formatAgo(now - lastMac)}.`
-        : 'No message from this Mac recorded yet.'
-      const startLine = `New sessions in ${basename(project.key)} start with AFK ${startsAway(settings, project.settings) ? 'on' : 'off'}.`
-      const minutes = autoAwayMinutesFor(settings, project.settings)
-      const autoLine = minutes === 0
-        ? 'Automatic AFK is off here.'
-        : `Automatic AFK here: after ${minutes} quiet minutes on this Mac.`
-      return { text: [state, macLine, startLine, autoLine].join(' ') }
-    }
-
-    if (arg === 'test') {
-      await ping($, { spoken: 'AFK test from Claude.', text: `AFK test from Claude Code in ${await projectName($)}.` })
-      const canSend = settings.voice.isEnabled || (settings.messages.isEnabled && settings.messages.primary !== '')
-      return { text: canSend ? 'Test ping sent.' : 'Nothing to test: voice and iMessage are both off. Run /afk setup.' }
-    }
-
-    if (arg === 'origins') {
-      const log = await $.store.get(ORIGIN_LOG_KEY)
-      const list = Array.isArray(log) ? (log as OriginEntry[]) : []
-      const now = await $.clock.now()
-      return {
-        text: list.length === 0
-          ? 'No messages recorded yet.'
-          : list.map(o => `${formatAgo(now - o.at)}: ${o.kind}`).join('\n'),
-      }
-    }
-
-    const isAll = arg === 'on all' || arg === 'off all'
-    if (arg !== '' && arg !== 'on' && arg !== 'off' && !isAll) {
-      return { text: 'Usage: /afk [on|off|on all|off all|setup|status|test]. With no argument, /afk toggles this session.' }
-    }
-
-    const away = arg === '' ? !wasAway : arg.startsWith('on')
-    if (isAll) await setAwayAll($, away)
-    else await setAway($, away, false)
-    const scope = isAll ? 'for every open session' : 'in this session'
-    if (!away) return { text: `AFK off ${scope}.` }
-    const problem = reachProblem(settings)
-    return {
-      text: problem === undefined
-        ? `AFK on ${scope}. You will get a ping when a turn ends or Claude needs you.`
-        : `AFK on ${scope}, but no ping will go out. ${problem} Run /afk setup.`,
-    }
-  })
+  on('command.run', { command: 'afk' }, ($, e) => runAfk($, e.args))
 
   on('prompt.submit', async ($, e, next) => {
     const result = await next(e)
